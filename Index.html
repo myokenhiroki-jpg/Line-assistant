@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LINE返信サポートアシスタント</title>
+    <style>
+        body {
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            background-color: #7494c0; /* LINE風の背景色 */
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            max-width: 500px;
+            width: 100%;
+            background: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        h2 {
+            text-align: center;
+            color: #333;
+            font-size: 1.2rem;
+            margin-bottom: 20px;
+        }
+        label {
+            font-weight: bold;
+            display: block;
+            margin-top: 15px;
+            color: #555;
+            font-size: 0.9rem;
+        }
+        select, textarea {
+            width: 100%;
+            padding: 10px;
+            margin-top: 5px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            box-sizing: border-box;
+            font-size: 0.95rem;
+        }
+        textarea {
+            resize: vertical;
+            height: 80px;
+        }
+        button {
+            width: 100%;
+            background-color: #24bd54; /* LINEグリーン */
+            color: white;
+            border: none;
+            padding: 12px;
+            margin-top: 20px;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background-color: #1da947;
+        }
+        .output-box {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f0f3f7;
+            border-left: 5px solid #24bd54;
+            border-radius: 4px;
+            display: none;
+        }
+        .output-title {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+        .suggestion {
+            background: white;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid #e0e0e0;
+            margin-bottom: 10px;
+            font-size: 0.95rem;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            cursor: pointer;
+        }
+        .suggestion:hover {
+            background-color: #f9f9f9;
+        }
+        .notice {
+            font-size: 0.8rem;
+            color: #ff4d4d;
+            margin-top: 5px;
+            font-weight: normal;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>LINE返信アシスタント</h2>
+
+    <label for="apiKey">Anthropic APIキー</label>
+    <input type="password" id="apiKey" placeholder="sk-ant-...">
+    <div class="notice" style="color:#888;">このキーはこの端末のブラウザ内にのみ保存されます（外部送信されるのはAnthropicのAPIへのリクエストのみ）。<span id="clearKeyLink" style="text-decoration:underline; cursor:pointer;">キーを削除する</span></div>
+    
+    <label for="situation">1. 今の状況・相手のトーンを選んでください</label>
+    <select id="situation" onchange="toggleNotice()">
+        <option value="thanks_apology">自分の不手際に対する謝罪・感謝を伝えるとき</option>
+        <option value="sad_寄り添い">相手から「悲しかった」「寂しかった」と言われたとき</option>
+        <option value="emotional_caution">相手がイライラしている・お互い感情的になりそうなとき</option>
+        <option value="busy_support">相手が育児やトラブル（看病・事故など）で大変そうなとき</option>
+        <option value="casual_reply">日常的な相談や、返信にスタンプだけを使いがちなとき</option>
+    </select>
+    <div id="emotional_notice" class="notice" style="display:none;">⚠️ 注意：感情的な連投や、勝ち負けを意識した言い回しは避けましょう！</div>
+
+    <label for="keyword">2. 相手のメッセージ内容や、伝えたいキーワード（任意）</label>
+    <textarea id="keyword" placeholder="例：タバコ 置き忘れ、看病 お疲れ様、悲しませてごめん など"></textarea>
+
+    <button id="generateBtn" onclick="generateReply()">最適な回答案を作成する</button>
+    <div id="errorBox" class="notice" style="display:none; margin-top:10px;"></div>
+
+    <div id="outputBox" class="output-box">
+        <div class="output-title">おすすめの回答案（クリックでコピーできます）:</div>
+        <div id="suggestion1" class="suggestion" onclick="copyToClipboard(this)"></div>
+        <div id="suggestion2" class="suggestion" onclick="copyToClipboard(this)"></div>
+        <div id="aiNotice" class="notice" style="color:#888; display:none;">※AI未接続のため、簡易テンプレートで表示しています</div>
+    </div>
+</div>
+
+<script>
+    const SITUATION_LABELS = {
+        thanks_apology: '自分の不手際に対する謝罪・感謝を伝えるとき',
+        sad_寄り添い: '相手から「悲しかった」「寂しかった」と言われたとき',
+        emotional_caution: '相手がイライラしている・お互い感情的になりそうなとき',
+        busy_support: '相手が育児やトラブル（看病・事故など）で大変そうなとき',
+        casual_reply: '日常的な相談や、返信にスタンプだけを使いがちなとき'
+    };
+
+    // 実際の過去のトーク履歴から抽出した、本人の話し方の特徴（口調のトーンのみを参考にするための例）
+    const STYLE_PROFILE = `一人称は「おれ」。装飾的な言い回しはせず、短い文を積み重ねる。
+謝るときは「ごめん」「ごめんね」「ごめんなさい」でまず一言謝り、そのあとに理由や次の行動を短く添えるだけ。長々と分析や説明はしない。
+労うときは「お疲れさま」「大変だったね」「無理しないでね」など、率直で短い言葉を使う。
+感謝は「ありがとう」で始めて、長く語らない。
+絵文字はほとんど使わない。使っても🍓😓程度でごく控えめ。
+実際に本人が送った過去メッセージの例（あくまでトーンの参考。同じ言い回しでなくてよい）：
+・ごめんね、おれがやらなきゃなのに。ありがとう。
+・ほんとにごめん
+・嫌な思いばかりさせてしまってごめんね
+・ごめん、軽く言ってしまった。ほんと大変だったよね。
+・お疲れさまでした
+・大変だったね
+・大丈夫？無理しないでね
+・それは大変だったね、おれも気をつけるよ
+・ありがとう。いつもやってくれてありがとう
+・聞いてくれてありがとう
+・辛い時こそ、甘いもの食べて一息つこう
+・そうなんだ。とても悲しいね
+・つらいね`;
+
+    function toggleNotice() {
+        const situation = document.getElementById('situation').value;
+        const notice = document.getElementById('emotional_notice');
+        if (situation === 'emotional_caution') {
+            notice.style.display = 'block';
+        } else {
+            notice.style.display = 'none';
+        }
+    }
+
+    // ページ読み込み時に保存済みAPIキーを復元
+    window.addEventListener('DOMContentLoaded', () => {
+        const saved = localStorage.getItem('lineAssistantApiKey');
+        if (saved) document.getElementById('apiKey').value = saved;
+        document.getElementById('clearKeyLink').addEventListener('click', () => {
+            localStorage.removeItem('lineAssistantApiKey');
+            document.getElementById('apiKey').value = '';
+        });
+    });
+
+    function showError(msg) {
+        const box = document.getElementById('errorBox');
+        box.textContent = msg;
+        box.style.display = msg ? 'block' : 'none';
+    }
+
+    async function generateReply() {
+        const situation = document.getElementById('situation').value;
+        const keyword = document.getElementById('keyword').value.trim();
+        const apiKey = document.getElementById('apiKey').value.trim();
+        const btn = document.getElementById('generateBtn');
+
+        showError('');
+
+        if (apiKey) {
+            localStorage.setItem('lineAssistantApiKey', apiKey);
+            btn.disabled = true;
+            btn.textContent = '作成中...';
+            try {
+                const suggestions = await generateWithAI(situation, keyword, apiKey);
+                document.getElementById('suggestion1').innerText = suggestions[0];
+                document.getElementById('suggestion2').innerText = suggestions[1];
+                document.getElementById('aiNotice').style.display = 'none';
+                document.getElementById('outputBox').style.display = 'block';
+            } catch (err) {
+                showError('AIでの作成に失敗しました（' + err.message + '）。簡易テンプレートを表示します。');
+                fallbackTemplate(situation, keyword);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '最適な回答案を作成する';
+            }
+        } else {
+            showError('APIキーが未入力のため、簡易テンプレートを表示します。自然な文章を作るにはAnthropic APIキーを入力してください。');
+            fallbackTemplate(situation, keyword);
+        }
+    }
+
+    // XMLHttpRequestベースのPOST。fetchが使えない/失敗する環境向けのフォールバック。
+    // 戻り値はfetchのResponseに似せて { ok, status, text() } の形にする
+    function postJSONviaXHR(url, headers, bodyObj) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', url, true);
+            Object.keys(headers).forEach(k => xhr.setRequestHeader(k, headers[k]));
+            xhr.onload = () => {
+                resolve({
+                    ok: xhr.status >= 200 && xhr.status < 300,
+                    status: xhr.status,
+                    text: () => Promise.resolve(xhr.responseText)
+                });
+            };
+            xhr.onerror = () => reject(new Error('XHR通信に失敗しました'));
+            xhr.ontimeout = () => reject(new Error('XHR通信がタイムアウトしました'));
+            xhr.timeout = 60000;
+            xhr.send(JSON.stringify(bodyObj));
+        });
+    }
+
+    async function postWithFallback(url, headers, bodyObj) {
+        try {
+            return await fetch(url, { method: 'POST', headers, body: JSON.stringify(bodyObj) });
+        } catch (fetchErr) {
+            // SafariのfetchがCORSクロスオリジン応答を読めない既知の不具合があるため、
+            // XMLHttpRequestで再試行する
+            try {
+                return await postJSONviaXHR(url, headers, bodyObj);
+            } catch (xhrErr) {
+                throw new Error(`fetch失敗（${fetchErr.message}）／XHRも失敗（${xhrErr.message}）`);
+            }
+        }
+    }
+
+    async function generateWithAI(situation, keyword, apiKey) {
+        const situationLabel = SITUATION_LABELS[situation];
+        const systemPrompt = `あなたは明見大樹（ユーザー本人）になりきって、パートナーへのLINE返信文を下書きするアシスタントです。
+以下は本人の実際の話し方の特徴です。これに忠実に従ってください。
+
+${STYLE_PROFILE}
+
+出力ルール：
+・定型文のテンプレートに当てはめたような不自然な文章にしないこと
+・キーワードが与えられた場合は、カギ括弧でそのまま引用せず、意味を汲み取って自然に文章へ溶け込ませること
+・長い説明や分析のような文章にせず、実際のLINEメッセージらしい自然な長さ・話し言葉にすること
+・出力は必ず次のJSON形式のみで返すこと。前置きや説明、Markdownのコードブロック記号は一切含めないこと
+{"suggestions": ["返信案1", "返信案2"]}`;
+
+        const userPrompt = `状況：${situationLabel}${keyword ? `\n伝えたい内容・キーワード：${keyword}` : ''}\n\nこの状況にふさわしい返信を2パターン作成してください。`;
+
+        let response;
+        try {
+            response = await postWithFallback(
+                "https://api.anthropic.com/v1/messages",
+                {
+                    "Content-Type": "application/json",
+                    "x-api-key": apiKey,
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-dangerous-direct-browser-access": "true"
+                },
+                {
+                    model: "claude-sonnet-4-6",
+                    max_tokens: 1500,
+                    system: systemPrompt,
+                    messages: [{ role: "user", content: userPrompt }]
+                }
+            );
+        } catch (networkErr) {
+            throw new Error('通信エラー：' + networkErr.message);
+        }
+
+        const rawText = await response.text();
+
+        if (!response.ok) {
+            throw new Error(`APIエラー ${response.status}：${rawText.slice(0, 200)}`);
+        }
+
+        let data;
+        try {
+            data = JSON.parse(rawText);
+        } catch (e) {
+            // 200なのにJSONでない = プロキシやフィルタが別の内容を返している可能性
+            throw new Error('サーバーからの応答がJSON形式ではありません：' + rawText.slice(0, 200));
+        }
+
+        const textBlock = (data.content || []).find(c => c.type === 'text');
+        if (!textBlock) {
+            throw new Error('応答にテキストが含まれていません：' + JSON.stringify(data).slice(0, 200));
+        }
+
+        // コードブロック記号や前後の説明文があっても、最初の { ... } ブロックだけを取り出す
+        const jsonMatch = textBlock.text.match(/\{[\s\S]*\}/);
+        const cleaned = jsonMatch ? jsonMatch[0] : textBlock.text.replace(/```json|```/g, '').trim();
+
+        let parsed;
+        try {
+            parsed = JSON.parse(cleaned);
+        } catch (e) {
+            throw new Error('返信案の解析に失敗しました：' + textBlock.text.slice(0, 200));
+        }
+        if (!parsed.suggestions || parsed.suggestions.length < 2) {
+            throw new Error('返信案が2件返りませんでした：' + cleaned.slice(0, 200));
+        }
+        return parsed.suggestions;
+    }
+
+    function fallbackTemplate(situation, keyword) {
+        let ans1 = "";
+        let ans2 = "";
+        const kwText = keyword ? `${keyword}のこと、` : "";
+
+        switch(situation) {
+            case 'thanks_apology':
+                ans1 = `ごめんね。${kwText}おれの不手際だった。今後は気をつけるね。`;
+                ans2 = `いつもありがとう。${kwText}軽い言い方になっちゃってごめん。反省してます。`;
+                break;
+            case 'sad_寄り添い':
+                ans1 = `寂しい思いさせてごめんね。ちゃんと寄り添えてなかった。`;
+                ans2 = `そっか、悲しかったんだね。話してくれてありがとう。`;
+                break;
+            case 'emotional_caution':
+                ans1 = `ちょっと落ち着いてから、またゆっくり話そう。`;
+                ans2 = `そういうつもりじゃなかったんだけど、ごめん。少し時間おこう。`;
+                break;
+            case 'busy_support':
+                ans1 = `${kwText}大変だったね。手伝えることあったら言ってね。`;
+                ans2 = `お疲れさま。気づいたことはやっておくから、ゆっくり休んで。`;
+                break;
+            case 'casual_reply':
+                ans1 = `${kwText}スタンプだけでごめんね、ちゃんと伝えたくて。ありがとう。`;
+                ans2 = `なるほど、そうだね。${kwText}帰ったら一緒に確認しよう。`;
+                break;
+        }
+
+        document.getElementById('suggestion1').innerText = ans1;
+        document.getElementById('suggestion2').innerText = ans2;
+        document.getElementById('aiNotice').style.display = 'block';
+        document.getElementById('outputBox').style.display = 'block';
+    }
+
+    function showCopied(element) {
+        const original = element.style.backgroundColor;
+        element.style.backgroundColor = '#d9f7e3';
+        setTimeout(() => { element.style.backgroundColor = original; }, 400);
+    }
+
+    function fallbackCopy(text, element) {
+        // iPhoneでファイルをローカルで開いた場合など、navigator.clipboardが
+        // 使えない/拒否される環境向けのフォールバック
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.top = '0';
+        textarea.style.left = '0';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        textarea.setSelectionRange(0, textarea.value.length);
+
+        let success = false;
+        try {
+            success = document.execCommand('copy');
+        } catch (err) {
+            success = false;
+        }
+        document.body.removeChild(textarea);
+
+        if (success) {
+            showCopied(element);
+        } else {
+            alert("自動コピーに失敗しました。テキストを長押しして手動で選択・コピーしてください。");
+        }
+    }
+
+    function copyToClipboard(element) {
+        const text = element.innerText;
+
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(() => {
+                showCopied(element);
+            }).catch(() => {
+                fallbackCopy(text, element);
+            });
+        } else {
+            fallbackCopy(text, element);
+        }
+    }
+</script>
+
+</body>
+</html>
